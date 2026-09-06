@@ -6,9 +6,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import scipy.optimize as sco
 from datetime import date
+import io
 import warnings
 warnings.filterwarnings("ignore")
-
 # ─────────────────────────────────────────────
 #  PAGE CONFIG
 # ─────────────────────────────────────────────
@@ -18,9 +18,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
 # ─────────────────────────────────────────────
-#  CSS
+#  CSS  — FIX 1: clean underline tab style (no blue block)
 # ─────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -55,7 +54,6 @@ footer                                    { display: none !important; }
     border: 1px solid #475569 !important; }
 [data-testid="stSidebar"] [data-testid="stSlider"] div { color: #cbd5e1 !important; }
 [data-testid="stSidebar"] .stSelectbox div { color: #e2e8f0 !important; }
-
 [data-testid="stMetric"]      { background: #ffffff; border: 1px solid #e2e8f0;
                                  border-radius: 12px; padding: 14px !important;
                                  box-shadow: 0 1px 3px rgba(0,0,0,.07); }
@@ -65,15 +63,39 @@ footer                                    { display: none !important; }
                                  font-weight: 800 !important; }
 [data-testid="stMetricDelta"] { font-size: 12px !important; }
 
-.stTabs [data-baseweb="tab-list"] { background: #ffffff; border-radius: 10px;
-                                     padding: 4px; gap: 3px;
-                                     border: 1px solid #e2e8f0;
-                                     box-shadow: 0 1px 3px rgba(0,0,0,.06); }
-.stTabs [data-baseweb="tab"]      { border-radius: 7px; color: #64748b !important;
-                                     font-weight: 600; font-size: 13px;
-                                     padding: 7px 14px; border: none !important; }
-.stTabs [aria-selected="true"]    { background: #2563eb !important;
-                                     color: #ffffff !important; }
+/* ── FIX 1: Tab styling — clean underline, no blue filled block ── */
+.stTabs [data-baseweb="tab-list"] {
+    background: #ffffff;
+    border-radius: 0;
+    padding: 0;
+    gap: 0;
+    border: none;
+    border-bottom: 2px solid #e2e8f0;
+    box-shadow: none;
+}
+.stTabs [data-baseweb="tab"] {
+    border-radius: 0;
+    color: #94a3b8 !important;
+    font-weight: 600;
+    font-size: 13px;
+    padding: 10px 18px;
+    border: none !important;
+    background: transparent !important;
+    border-bottom: 3px solid transparent !important;
+    margin-bottom: -2px;
+}
+.stTabs [data-baseweb="tab"]:hover:not([aria-selected="true"]) {
+    color: #475569 !important;
+    background: #f8fafc !important;
+    border-bottom: 3px solid #cbd5e1 !important;
+}
+.stTabs [aria-selected="true"] {
+    color: #0f172a !important;
+    background: transparent !important;
+    border-bottom: 3px solid #0f172a !important;
+    font-weight: 700 !important;
+}
+
 h1,h2,h3,h4 { color: #0f172a !important; }
 p           { color: #334155; }
 [data-testid="stDataFrame"] { border-radius: 10px; border: 1px solid #e2e8f0;
@@ -88,7 +110,6 @@ hr { border-color: #e2e8f0 !important; margin: 0.8rem 0 !important; }
                    font-size: 14px !important; height: 44px; }
 </style>
 """, unsafe_allow_html=True)
-
 # ─────────────────────────────────────────────
 #  THEME TOKENS
 # ─────────────────────────────────────────────
@@ -102,9 +123,8 @@ C = {
 }
 PALETTE = ["#2563eb","#16a34a","#d97706","#dc2626",
            "#7c3aed","#0891b2","#ea580c","#65a30d"]
-
 # ─────────────────────────────────────────────
-#  MARKET INDEX MAP  — friendly name → Yahoo ticker
+#  MARKET INDEX MAP
 # ─────────────────────────────────────────────
 MARKET_MAP = {
     "Nifty 50"          : "^NSEI",
@@ -120,7 +140,6 @@ MARKET_MAP = {
     "Nasdaq 100 (US)"   : "^NDX",
     "Dow Jones (US)"    : "^DJI",
 }
-
 # ─────────────────────────────────────────────
 #  CHART HELPERS
 # ─────────────────────────────────────────────
@@ -133,7 +152,6 @@ def apply_white_theme(fig, height=500, margin=None, hovermode="closest"):
         legend=dict(bgcolor=C["bg"], bordercolor=C["border"],
                     borderwidth=1, font=dict(size=11, color=C["body"]))
     )
-
 def style_axes(fig, xkw=None, ykw=None):
     xd = dict(gridcolor=C["border"], zeroline=False,
                tickfont=dict(size=11, color=C["muted"]),
@@ -147,17 +165,12 @@ def style_axes(fig, xkw=None, ykw=None):
     if ykw: yd.update(ykw)
     fig.update_xaxes(**xd)
     fig.update_yaxes(**yd)
-
 # ─────────────────────────────────────────────
 #  TICKER AUTO-RESOLVER
-#  User types  TCS / INFY / AAPL  (no suffix needed)
-#  We try:  TCS.NS  →  TCS.BO  →  TCS  (US / crypto)
 # ─────────────────────────────────────────────
 @st.cache_data(show_spinner=False, ttl=3600)
 def resolve_ticker(raw: str) -> str | None:
-    """Return the first valid Yahoo Finance ticker for a raw symbol."""
     raw = raw.strip().upper()
-    # If user already added a suffix, honour it directly
     if "." in raw:
         try:
             d = yf.download(raw, period="5d", progress=False, auto_adjust=True)
@@ -166,8 +179,6 @@ def resolve_ticker(raw: str) -> str | None:
         except Exception:
             pass
         return None
-
-    # Otherwise try suffixes in order
     for suffix in [".NS", ".BO", ""]:
         candidate = raw + suffix
         try:
@@ -177,12 +188,8 @@ def resolve_ticker(raw: str) -> str | None:
         except Exception:
             continue
     return None
-
-
 def short(t: str) -> str:
-    """Strip exchange suffix for display."""
     return t.replace(".NS","").replace(".BO","").replace(".BSE","")
-
 # ─────────────────────────────────────────────
 #  FINANCE FUNCTIONS
 # ─────────────────────────────────────────────
@@ -194,23 +201,17 @@ def fetch_data(resolved_tickers, mkt, start, end):
     raw.dropna(how="all", inplace=True)
     avail = [t for t in resolved_tickers if t in raw.columns]
     return raw[avail].dropna(), raw[mkt].dropna(), avail
-
-
 def compute_stats(sd, md):
     ret, mkt = sd.pct_change().dropna(), md.pct_change().dropna()
     ret, mkt = ret.align(mkt, join="inner", axis=0)
     return (ret, mkt,
             ret.mean()*252, ret.cov()*252, ret.corr(),
             float(mkt.mean()*252), float(np.var(mkt)))
-
-
 def port_perf(w, mu, sig, rf):
     r  = float(np.dot(w, mu))
     v  = float(np.sqrt(np.dot(w.T, np.dot(sig, w))))
     sh = (r - rf) / v if v > 0 else 0.0
     return r, v, sh
-
-
 def optimize_portfolio(mu, sig, rf):
     n = len(mu)
     res = sco.minimize(
@@ -220,8 +221,6 @@ def optimize_portfolio(mu, sig, rf):
         constraints={"type":"eq","fun":lambda x: np.sum(x)-1}
     )
     return res.x
-
-
 def find_gmvp(mu, sig):
     n = len(mu)
     res = sco.minimize(
@@ -233,8 +232,6 @@ def find_gmvp(mu, sig):
     if res.success:
         return float(np.dot(res.x, mu)), float(res.fun)
     return None, None
-
-
 def min_var_vol(mu, sig, target):
     n = len(mu)
     res = sco.minimize(
@@ -247,17 +244,347 @@ def min_var_vol(mu, sig, target):
         ]
     )
     return float(res.fun) if res.success else None
-
-
 def get_betas(returns, mkt_ret, mkt_var):
     return {c: float(np.cov(returns[c], mkt_ret)[0,1]/mkt_var)
             for c in returns.columns}
-
-
 def get_port_beta(port_daily, mkt_ret):
     return float(np.cov(port_daily, mkt_ret)[0,1]/np.var(mkt_ret))
-
-
+# ─────────────────────────────────────────────
+#  EXCEL BUILDER
+# ─────────────────────────────────────────────
+def build_excel(stock_data, market_data, returns, mkt_ret,
+                mean_ret, cov_mat, corr_mat, mkt_annual,
+                available, market_choice, rf_rate,
+                opt_w, opt_ret, opt_vol, opt_sh,
+                port_beta, capm_ret, alpha_val, betas,
+                gmvp_ret, gmvp_vol, start_date, end_date):
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        return None
+    wb  = openpyxl.Workbook()
+    lbl = [short(t) for t in available]
+    n   = len(available)
+    def _fill(h): return PatternFill("solid", fgColor=h)
+    def _font(h, bold=False, sz=10): return Font(bold=bold, color=h, size=sz)
+    thin = Side(style="thin", color="CBD5E0")
+    BRD  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    CTR  = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    LFT  = Alignment(horizontal="left",   vertical="center")
+    RGT  = Alignment(horizontal="right",  vertical="center")
+    F_HDR  = _fill("1E3A5F"); FN_HDR  = _font("FFFFFF", True)
+    F_SUB  = _fill("2D4A7A"); FN_SUB  = _font("FFFFFF", True)
+    F_STAT = _fill("EFF6FF"); FN_STAT = _font("1E3A5F", True)
+    F_TTL  = _fill("0F172A"); FN_TTL  = _font("FFFFFF", True, 12)
+    FN_NRM = _font("1E293B")
+    FN_GRN = _font("16A34A", True)
+    FN_RED = _font("DC2626", True)
+    def hdr(ws, r, c, v, fill=F_HDR, fn=FN_HDR, aln=CTR):
+        cl = ws.cell(row=r, column=c, value=v)
+        cl.fill=fill; cl.font=fn; cl.alignment=aln; cl.border=BRD
+        return cl
+    def put(ws, r, c, v, fmt=None, fn=FN_NRM, fill=None, aln=RGT):
+        cl = ws.cell(row=r, column=c, value=v)
+        cl.font=fn; cl.alignment=aln; cl.border=BRD
+        if fmt:  cl.number_format=fmt
+        if fill: cl.fill=fill
+        return cl
+    def cw(ws, col, w):
+        ws.column_dimensions[get_column_letter(col)].width = w
+    PC     = 2
+    MKT_PC = PC + n
+    RC     = MKT_PC + 1
+    MKT_RC = RC + n
+    SC     = MKT_RC + 2
+    ws1 = wb.active
+    ws1.title = "Data, Covariance & Correlation"
+    ws1.freeze_panes = "B3"
+    last_col = SC + n + 2
+    ws1.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
+    c_ = ws1.cell(row=1, column=1,
+        value=f"Data, Covariance & Correlation  |  {start_date} to {end_date}  |  Market: {market_choice}")
+    c_.font=FN_TTL; c_.fill=F_TTL; c_.alignment=CTR
+    hdr(ws1, 2, 1, "Date")
+    for i, lb in enumerate(lbl):
+        hdr(ws1, 2, PC+i, f"{lb}\nPrice")
+    hdr(ws1, 2, MKT_PC, f"{market_choice}\nPrice")
+    ws1.merge_cells(start_row=2, start_column=RC, end_row=2, end_column=MKT_RC)
+    rh = ws1.cell(row=2, column=RC, value="Daily Returns →")
+    rh.fill=F_SUB; rh.font=FN_SUB; rh.alignment=CTR; rh.border=BRD
+    hdr(ws1, 2, SC,   "Metric",        fill=F_STAT, fn=FN_STAT)
+    for i, lb in enumerate(lbl):
+        hdr(ws1, 2, SC+1+i, lb,        fill=F_STAT, fn=FN_STAT)
+    hdr(ws1, 2, SC+1+n, market_choice, fill=F_STAT, fn=FN_STAT)
+    hdr(ws1, 3, 1, "Date",            fill=F_SUB, fn=FN_SUB)
+    for i, t in enumerate(available):
+        hdr(ws1, 3, PC+i, t,           fill=F_SUB, fn=FN_SUB)
+    hdr(ws1, 3, MKT_PC, market_choice,fill=F_SUB, fn=FN_SUB)
+    for i, lb in enumerate(lbl):
+        hdr(ws1, 3, RC+i, f"{lb}\nReturn", fill=F_SUB, fn=FN_SUB)
+    hdr(ws1, 3, MKT_RC, f"{market_choice}\nReturn", fill=F_SUB, fn=FN_SUB)
+    cw(ws1, 1, 13)
+    for c__ in range(2, MKT_RC+2):
+        cw(ws1, c__, 14)
+    cw(ws1, SC, 26)
+    for c__ in range(SC+1, SC+n+3):
+        cw(ws1, c__, 16)
+    aligned_idx = returns.index
+    price_df    = stock_data.reindex(aligned_idx)
+    mkt_prc     = market_data.reindex(aligned_idx)
+    DATA_ROW    = 4
+    all_price_dates = stock_data.index
+    first_return_date = aligned_idx[0]
+    base_date_pos = list(all_price_dates).index(first_return_date)
+    if base_date_pos > 0:
+        base_date = all_price_dates[base_date_pos - 1]
+        base_row  = DATA_ROW
+        DATA_ROW  = DATA_ROW + 1
+        bc = ws1.cell(row=base_row, column=1, value=base_date.date())
+        bc.number_format = "DD-MMM-YYYY"; bc.alignment=CTR; bc.border=BRD
+        bc.font = _font("94A3B8")
+        for i, t in enumerate(available):
+            if t in stock_data.columns:
+                v = float(stock_data.loc[base_date, t]) if base_date in stock_data.index else None
+                put(ws1, base_row, PC+i, v, fmt="0.00")
+        v_mkt = float(market_data.loc[base_date]) if base_date in market_data.index else None
+        put(ws1, base_row, MKT_PC, v_mkt, fmt="0.00")
+    for ri, dt in enumerate(aligned_idx):
+        row = DATA_ROW + ri
+        dc = ws1.cell(row=row, column=1, value=dt.date())
+        dc.number_format="DD-MMM-YYYY"; dc.alignment=CTR; dc.border=BRD; dc.font=FN_NRM
+        for i, t in enumerate(available):
+            v = float(price_df.loc[dt, t]) if (t in price_df.columns and dt in price_df.index) else None
+            put(ws1, row, PC+i, v, fmt="0.00")
+        v = float(mkt_prc.loc[dt]) if dt in mkt_prc.index else None
+        put(ws1, row, MKT_PC, v, fmt="0.00")
+        for i in range(n):
+            pcol = get_column_letter(PC+i)
+            formula = f"=({pcol}{row}/{pcol}{row-1})-1"
+            put(ws1, row, RC+i, formula, fmt="0.00000000")
+        mcol = get_column_letter(MKT_PC)
+        put(ws1, row, MKT_RC, f"=({mcol}{row}/{mcol}{row-1})-1", fmt="0.00000000")
+    D_END = DATA_ROW + len(aligned_idx) - 1
+    stat_defs = [
+        ("Average Daily Return",   "AVERAGE", "0.00000000"),
+        ("Annualised Daily Return", "ANNRET",  "0.00%"),
+        ("Daily STD",              "STDEV",   "0.00000000"),
+        ("Annualised STD",         "ANNSTD",  "0.00%"),
+        ("Daily Variance",         "VAR",     "0.00000000"),
+        ("Annualised Variance",    "ANNVAR",  "0.00000000"),
+    ]
+    sr = DATA_ROW
+    VAR_MKT_ROW = None
+    for si, (s_lbl, stype, fmt) in enumerate(stat_defs):
+        if stype == "VAR":
+            VAR_MKT_ROW = sr
+        hdr(ws1, sr, SC, s_lbl, fill=F_STAT, fn=FN_STAT, aln=LFT)
+        for i in range(n):
+            rc_ = get_column_letter(RC+i)
+            rng = f"{rc_}{DATA_ROW}:{rc_}{D_END}"
+            if   stype == "AVERAGE": f_ = f"=AVERAGE({rng})"
+            elif stype == "ANNRET":  f_ = f"=AVERAGE({rng})*252"
+            elif stype == "STDEV":   f_ = f"=STDEV({rng})"
+            elif stype == "ANNSTD":  f_ = f"=STDEV({rng})*SQRT(252)"
+            elif stype == "VAR":     f_ = f"=VAR({rng})"
+            elif stype == "ANNVAR":  f_ = f"=VAR({rng})*252"
+            put(ws1, sr, SC+1+i, f_, fmt=fmt)
+        mrc_ = get_column_letter(MKT_RC)
+        mrng = f"{mrc_}{DATA_ROW}:{mrc_}{D_END}"
+        if   stype == "AVERAGE": mf = f"=AVERAGE({mrng})"
+        elif stype == "ANNRET":  mf = f"=AVERAGE({mrng})*252"
+        elif stype == "STDEV":   mf = f"=STDEV({mrng})"
+        elif stype == "ANNSTD":  mf = f"=STDEV({mrng})*SQRT(252)"
+        elif stype == "VAR":     mf = f"=VAR({mrng})"
+        elif stype == "ANNVAR":  mf = f"=VAR({mrng})*252"
+        put(ws1, sr, SC+1+n, mf, fmt=fmt)
+        sr += 1
+    sr += 1
+    ANN_RET_MKT = f"{get_column_letter(SC+1+n)}{DATA_ROW+1}"
+    if VAR_MKT_ROW:
+        VAR_MKT_REF = f"{get_column_letter(SC+1+n)}{VAR_MKT_ROW}"
+    hdr(ws1, sr, SC, "Covariance with Market (Daily)", fill=F_HDR)
+    sr += 1
+    hdr(ws1, sr, SC,   "Stock",                  fill=F_STAT, fn=FN_STAT, aln=LFT)
+    hdr(ws1, sr, SC+1, "Cov with Market (Daily)", fill=F_STAT, fn=FN_STAT)
+    hdr(ws1, sr, SC+2, "Beta",                   fill=F_STAT, fn=FN_STAT)
+    sr += 1
+    mkt_var_daily = float(np.var(mkt_ret, ddof=1))
+    COV_CELLS = {}
+    for i, t in enumerate(available):
+        cov_val = float(np.cov(returns[t], mkt_ret)[0,1])
+        cov_cell = f"{get_column_letter(SC+1)}{sr+i}"
+        COV_CELLS[t] = cov_cell
+        put(ws1, sr+i, SC,   lbl[i], aln=LFT)
+        put(ws1, sr+i, SC+1, cov_val, fmt="0.00000000")
+        if VAR_MKT_ROW:
+            put(ws1, sr+i, SC+2, f"={cov_cell}/{VAR_MKT_REF}", fmt="0.000000")
+        else:
+            put(ws1, sr+i, SC+2, betas[t], fmt="0.000000")
+    BETA_ROWS = {t: sr+i for i, t in enumerate(available)}
+    sr += n + 1
+    hdr(ws1, sr, SC, "Covariance Matrix (Annualised)", fill=F_HDR)
+    sr += 1
+    hdr(ws1, sr, SC, "", fill=F_STAT, fn=FN_STAT)
+    for i, lb in enumerate(lbl):
+        hdr(ws1, sr, SC+1+i, lb, fill=F_STAT, fn=FN_STAT)
+    sr += 1
+    for i, t in enumerate(available):
+        hdr(ws1, sr, SC, lbl[i], fill=F_STAT, fn=FN_STAT, aln=LFT)
+        for j, t2 in enumerate(available):
+            put(ws1, sr, SC+1+j, float(cov_mat.loc[t, t2]), fmt="0.00000000")
+        sr += 1
+    sr += 1
+    hdr(ws1, sr, SC, "Correlation Matrix", fill=F_HDR)
+    sr += 1
+    hdr(ws1, sr, SC, "", fill=F_STAT, fn=FN_STAT)
+    for i, lb in enumerate(lbl):
+        hdr(ws1, sr, SC+1+i, lb, fill=F_STAT, fn=FN_STAT)
+    sr += 1
+    for i, t in enumerate(available):
+        hdr(ws1, sr, SC, lbl[i], fill=F_STAT, fn=FN_STAT, aln=LFT)
+        for j, t2 in enumerate(available):
+            put(ws1, sr, SC+1+j, float(corr_mat.loc[t, t2]), fmt="0.000000")
+        sr += 1
+    ws2 = wb.create_sheet("SML")
+    for c__, w__ in zip(range(1,6), [28,14,20,20,18]):
+        cw(ws2, c__, w__)
+    ws2.merge_cells("A1:E1")
+    c_ = ws2.cell(row=1, column=1, value="Security Market Line — CAPM Analysis")
+    c_.font=FN_TTL; c_.fill=F_TTL; c_.alignment=CTR
+    ws2.cell(row=2, column=7, value="Risk-Free Rate").font = FN_STAT
+    ws2.cell(row=2, column=8, value=rf_rate).number_format = "0.00%"
+    ws2.cell(row=3, column=7, value="Market Annual Return").font = FN_STAT
+    ws2.cell(row=3, column=8, value=mkt_annual).number_format = "0.00%"
+    ws2.cell(row=4, column=7, value="Market Risk Premium").font = FN_STAT
+    ws2.cell(row=4, column=8, value=f"=H3-H2").number_format = "0.00%"
+    ws2.cell(row=5, column=7, value="Period").font = FN_STAT
+    ws2.cell(row=5, column=8, value=f"{start_date} → {end_date}")
+    ws2.cell(row=6, column=7, value="Market Index").font = FN_STAT
+    ws2.cell(row=6, column=8, value=market_choice)
+    RF2 = "$H$2"; RM2 = "$H$3"
+    for c__, h in enumerate(
+            ["Stock / Asset","Beta (β)","CAPM Required Return",
+             "Actual Annualised Return","Verdict"], start=1):
+        hdr(ws2, 8, c__, h)
+    put(ws2, 9, 1, "Risk-Free Asset", aln=LFT)
+    put(ws2, 9, 2, 0,               fmt="0.0000")
+    put(ws2, 9, 3, f"={RF2}",        fmt="0.00%")
+    put(ws2, 9, 4, f"={RF2}",        fmt="0.00%")
+    put(ws2, 9, 5, "—",              aln=CTR)
+    put(ws2, 10, 1, market_choice,   aln=LFT)
+    put(ws2, 10, 2, 1.0,             fmt="0.0000")
+    put(ws2, 10, 3, f"={RM2}",       fmt="0.00%")
+    put(ws2, 10, 4, f"={RM2}",       fmt="0.00%")
+    put(ws2, 10, 5, "Market Portfolio", aln=CTR)
+    for idx, t in enumerate(available):
+        row = 11 + idx
+        b_   = betas[t]
+        act  = float(mean_ret[t])
+        capm_= rf_rate + b_*(mkt_annual - rf_rate)
+        under = act > capm_
+        put(ws2, row, 1, lbl[idx],          aln=LFT)
+        put(ws2, row, 2, b_,                fmt="0.000000")
+        put(ws2, row, 3, f"={RF2}+B{row}*({RM2}-{RF2})", fmt="0.00%")
+        put(ws2, row, 4, act,               fmt="0.00%")
+        vc = ws2.cell(row=row, column=5,
+                      value=f'=IF(D{row}>C{row},"✅ Undervalued","❌ Overvalued")')
+        vc.alignment=CTR; vc.border=BRD
+        vc.font = FN_GRN if under else FN_RED
+    ws3 = wb.create_sheet("Optimal Portfolio")
+    for c__, w__ in zip(range(1,10), [28,13,13,13,13,13,13,13,14]):
+        cw(ws3, c__, w__)
+    for c__ in range(10,14):
+        cw(ws3, c__, 18)
+    ws3.merge_cells("A1:H1")
+    c_ = ws3.cell(row=1, column=1,
+                  value="Optimal Risky Portfolio — SLSQP (Max Sharpe)")
+    c_.font=FN_TTL; c_.fill=F_TTL; c_.alignment=CTR
+    def anc(ws, r, lbl_, val, fmt_):
+        ws.cell(row=r, column=11, value=lbl_).font = FN_STAT
+        cl = ws.cell(row=r, column=12, value=val)
+        cl.number_format = fmt_
+    anc(ws3, 2,  "Risk-Free Rate",   rf_rate,    "0.00%")
+    anc(ws3, 3,  "Market Return",    mkt_annual, "0.00%")
+    anc(ws3, 4,  "Opt. Return",      opt_ret,    "0.00%")
+    anc(ws3, 5,  "Opt. Volatility",  opt_vol,    "0.00%")
+    anc(ws3, 6,  "Opt. Beta",        port_beta,  "0.0000")
+    ws3.cell(row=7, column=11, value="Sharpe Ratio").font = FN_STAT
+    ws3.cell(row=7, column=12, value=f"=(L4-L2)/L5").number_format = "0.0000"
+    RF3="$L$2"; RM3="$L$3"; OR3="$L$4"; OV3="$L$5"; OB3="$L$6"; OS3="$L$7"
+    for c__, h in enumerate(
+            ["Stock","Optimal Weight","Annual Return","Annual Std Dev",
+             "Beta","CAPM Return","Jensen's Alpha","In Portfolio?"], start=1):
+        hdr(ws3, 2, c__, h)
+    for idx, t in enumerate(available):
+        row = 3 + idx
+        w_  = float(opt_w[available.index(t)])
+        ret_= float(mean_ret[t])
+        std_= float(np.sqrt(np.var(returns[t], ddof=1)*252))
+        b_  = betas[t]
+        put(ws3, row, 1, lbl[idx], aln=LFT)
+        put(ws3, row, 2, w_,       fmt="0.00%")
+        put(ws3, row, 3, ret_,     fmt="0.00%")
+        put(ws3, row, 4, std_,     fmt="0.00%")
+        put(ws3, row, 5, b_,       fmt="0.0000")
+        put(ws3, row, 6, f"={RF3}+E{row}*({RM3}-{RF3})", fmt="0.00%")
+        put(ws3, row, 7, f"=C{row}-F{row}", fmt="+0.00%;-0.00%")
+        ac = ws3.cell(row=row, column=8,
+                      value=f'=IF(B{row}>0.1%,"✅ Yes","⭕ No")')
+        ac.alignment=CTR; ac.border=BRD
+        ac.font = FN_GRN if w_ > 0.001 else FN_NRM
+    sr3 = 4 + n
+    hdr(ws3, sr3, 1, "Portfolio Summary", fill=F_HDR)
+    sr3 += 1
+    summ = [
+        ("Expected Annual Return", f"={OR3}",                          "0.00%"),
+        ("Annual Volatility",      f"={OV3}",                          "0.00%"),
+        ("Sharpe Ratio",           f"={OS3}",                          "0.0000"),
+        ("Portfolio Beta",         f"={OB3}",                          "0.0000"),
+        ("CAPM Expected Return",   f"={RF3}+{OB3}*({RM3}-{RF3})",      "0.00%"),
+        ("Jensen Alpha",           f"={OR3}-({RF3}+{OB3}*({RM3}-{RF3}))", "+0.00%;-0.00%"),
+        ("GMVP Return",            gmvp_ret if isinstance(gmvp_ret, float) else "N/A", "0.00%"),
+        ("GMVP Volatility",        gmvp_vol if isinstance(gmvp_vol, float) else "N/A", "0.00%"),
+        ("Risk-Free Rate",         f"={RF3}",                          "0.00%"),
+        ("Market Annual Return",   f"={RM3}",                          "0.00%"),
+        ("Market Risk Premium",    f"={RM3}-{RF3}",                    "0.00%"),
+    ]
+    for s_l, s_v, s_f in summ:
+        hdr(ws3, sr3, 1, s_l, fill=F_STAT, fn=FN_STAT, aln=LFT)
+        if isinstance(s_v, str) and s_v.startswith("="):
+            put(ws3, sr3, 2, s_v, fmt=s_f)
+        elif isinstance(s_v, float):
+            put(ws3, sr3, 2, s_v, fmt=s_f)
+        else:
+            put(ws3, sr3, 2, str(s_v), aln=LFT)
+        sr3 += 1
+    sr3 += 1
+    ws3.merge_cells(start_row=sr3, start_column=1, end_row=sr3, end_column=7)
+    c_ = ws3.cell(row=sr3, column=1,
+                  value="Capital Allocation Line — 101 Portfolio Combinations")
+    c_.font=FN_TTL; c_.fill=F_HDR; c_.alignment=CTR
+    sr3 += 1
+    for c__, h in enumerate(
+            ["Risk-Free Wt","Risky Wt","Expected Return",
+             "Volatility (Risk)","Portfolio Beta","CAPM Req. Return","Sharpe Ratio"],
+            start=1):
+        hdr(ws3, sr3, c__, h)
+    sr3 += 1
+    for i in range(101):
+        row = sr3 + i
+        put(ws3, row, 1, i/100.0,                            fmt="0%")
+        put(ws3, row, 2, f"=1-A{row}",                       fmt="0%")
+        put(ws3, row, 3, f"=A{row}*{RF3}+B{row}*{OR3}",     fmt="0.00%")
+        put(ws3, row, 4, f"=B{row}*{OV3}",                   fmt="0.00%")
+        put(ws3, row, 5, f"=B{row}*{OB3}",                   fmt="0.0000")
+        put(ws3, row, 6, f"={RF3}+E{row}*({RM3}-{RF3})",     fmt="0.00%")
+        put(ws3, row, 7,
+            f"=IF(D{row}>0,(C{row}-{RF3})/D{row},0)",        fmt="0.0000")
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
 # ─────────────────────────────────────────────
 #  SIDEBAR
 # ─────────────────────────────────────────────
@@ -272,8 +599,6 @@ with st.sidebar:
     </div>
     <hr style='border-color:#334155; margin:0 0 14px 0;'>
     """, unsafe_allow_html=True)
-
-    # ── Date Range ──
     st.markdown("<p style='color:#93c5fd; font-size:10px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase; margin-bottom:6px;'>📅 DATE RANGE</p>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
@@ -284,41 +609,31 @@ with st.sidebar:
         end_date = st.date_input("E", value=date.today(),
                                  max_value=date.today(), label_visibility="collapsed")
         st.caption("End date")
-
     st.markdown("<hr style='border-color:#334155; margin:10px 0;'>", unsafe_allow_html=True)
-
-    # ── Stock Tickers ──
     st.markdown("<p style='color:#93c5fd; font-size:10px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase; margin-bottom:4px;'>📈 STOCK TICKERS</p>", unsafe_allow_html=True)
     st.caption("Just type the symbol — TCS, INFY, AAPL. One per line. No .NS needed.")
-
     ticker_input = st.text_area("Tickers", label_visibility="collapsed", height=210,
         value="TCS\nINFY\nHDFCBANK\nICICIBANK\nRELIANCE\n"
               "ITC\nSUNPHARMA\nBHARTIARTL\nM&M\nGOLDBEES")
     raw_tickers = [t.strip().upper() for t in ticker_input.strip().split("\n") if t.strip()]
-
     st.markdown("<hr style='border-color:#334155; margin:10px 0;'>", unsafe_allow_html=True)
-
-    # ── Market Index ── friendly dropdown
     st.markdown("<p style='color:#93c5fd; font-size:10px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase; margin-bottom:4px;'>🏦 MARKET INDEX</p>", unsafe_allow_html=True)
-
     market_choice = st.selectbox(
         "Market Index",
         options=list(MARKET_MAP.keys()),
-        index=0,          # default: Nifty 50
+        index=0,
         label_visibility="collapsed"
     )
     market_ticker = MARKET_MAP[market_choice]
     st.caption(f"Yahoo Finance ticker: `{market_ticker}`")
-
     st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-
-    # ── Risk-Free Rate ──
     st.markdown("<p style='color:#93c5fd; font-size:10px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase; margin-bottom:4px;'>💰 RISK-FREE RATE</p>", unsafe_allow_html=True)
     rf_rate = st.slider("Risk-Free Rate (%)", 0.0, 15.0, 6.5, 0.1) / 100
-
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     run_btn = st.button("🚀  Run Optimization", use_container_width=True, type="primary")
-
+    st.markdown("<hr style='border-color:#334155; margin:10px 0;'>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#93c5fd; font-size:10px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase; margin-bottom:4px;'>📥 EXCEL EXPORT</p>", unsafe_allow_html=True)
+    want_excel = st.checkbox("Generate Excel report", value=False)
     st.markdown("""
     <div style='margin-top:12px; background:#0f172a; border:1px solid #334155;
                 border-radius:10px; padding:10px 12px; font-size:11px; color:#94a3b8;'>
@@ -329,8 +644,6 @@ with st.sidebar:
         • 3–20 stocks work best
     </div>
     """, unsafe_allow_html=True)
-
-
 # ─────────────────────────────────────────────
 #  MAIN HEADER
 # ─────────────────────────────────────────────
@@ -350,7 +663,6 @@ st.markdown("""
     </div>
 </div>
 """, unsafe_allow_html=True)
-
 # ─────────────────────────────────────────────
 #  LANDING
 # ─────────────────────────────────────────────
@@ -386,36 +698,26 @@ if not run_btn:
     </div>
     """, unsafe_allow_html=True)
     st.stop()
-
-
 # ─────────────────────────────────────────────
-#  RESOLVE TICKERS  (auto-detect exchange suffix)
+#  RESOLVE TICKERS
 # ─────────────────────────────────────────────
 with st.spinner("🔍 Resolving ticker symbols..."):
     resolve_progress = st.empty()
-    resolved_map   = {}   # raw → resolved ticker (e.g. TCS → TCS.NS)
+    resolved_map   = {}
     failed_tickers = []
-
     for raw in raw_tickers:
         resolved = resolve_ticker(raw)
         if resolved:
             resolved_map[raw] = resolved
         else:
             failed_tickers.append(raw)
-
-    tickers = list(resolved_map.values())   # resolved tickers for download
-
+    tickers = list(resolved_map.values())
 if failed_tickers:
     st.warning(f"⚠️ Could not find: **{', '.join(failed_tickers)}** — skipped. "
                f"Check spelling or try adding suffix manually (e.g. TCS.NS).")
-
 if len(tickers) < 2:
     st.error("❌ Need at least 2 valid tickers. Please check your inputs.")
     st.stop()
-
-
-
-
 # ─────────────────────────────────────────────
 #  FETCH & COMPUTE
 # ─────────────────────────────────────────────
@@ -423,34 +725,26 @@ with st.spinner(f"⏳ Fetching data from {start_date} to {end_date} and running 
     try:
         stock_data, market_data, available = fetch_data(
             tuple(tickers), market_ticker, str(start_date), str(end_date))
-
         if len(available) < 2:
             st.error("❌ Not enough data returned. Try a different date range.")
             st.stop()
-
         (returns, mkt_ret, mean_ret,
          cov_mat, corr_mat, mkt_annual, mkt_var) = compute_stats(stock_data, market_data)
-
         opt_w                    = optimize_portfolio(mean_ret, cov_mat, rf_rate)
         opt_ret, opt_vol, opt_sh = port_perf(opt_w, mean_ret, cov_mat, rf_rate)
         gmvp_ret, gmvp_vol       = find_gmvp(mean_ret, cov_mat)
-
         port_daily = returns.dot(opt_w)
         port_beta  = get_port_beta(port_daily, mkt_ret)
         capm_ret   = rf_rate + port_beta*(mkt_annual - rf_rate)
         alpha      = opt_ret - capm_ret
         betas      = get_betas(returns, mkt_ret, mkt_var)
-
     except Exception as e:
         st.error(f"❌ Error: {e}")
         st.stop()
-
-
 # ─────────────────────────────────────────────
 #  KEY METRICS
 # ─────────────────────────────────────────────
 st.markdown("<p style='font-size:15px; font-weight:700; color:#0f172a; margin-bottom:10px;'>🎯 Optimal Portfolio — Key Metrics</p>", unsafe_allow_html=True)
-
 m1,m2,m3,m4,m5,m6 = st.columns(6)
 active_n = sum(1 for w in opt_w if w > 0.001)
 m1.metric("📈 Annual Return",  f"{opt_ret:.2%}",   delta=f"+{opt_ret-rf_rate:.2%} vs Rf")
@@ -459,33 +753,31 @@ m3.metric("⚡ Sharpe Ratio",   f"{opt_sh:.4f}",    delta="Max Sharpe")
 m4.metric("🔵 Beta",           f"{port_beta:.4f}", delta="Systematic Risk")
 m5.metric("🏦 CAPM Return",    f"{capm_ret:.2%}",  delta=f"Alpha: {alpha:+.2%}")
 m6.metric("✅ Active Stocks",  f"{active_n}/{len(available)}", delta="Non-zero weights")
-
 st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 st.markdown("---")
-
-
 # ─────────────────────────────────────────────
 #  TABS
 # ─────────────────────────────────────────────
-tab1,tab2,tab3,tab4,tab5,tab6 = st.tabs([
+_labels = [
     "🏆  Optimal Portfolio",
     "📊  CAL & Efficient Frontier",
     "🎯  Security Market Line",
     "🔥  Correlation Matrix",
     "📉  Stock Valuation",
-    "📋  CAL Simulation"
-])
-
-
+    "📋  CAL Simulation",
+]
+if want_excel:
+    _labels.append("📥  Export to Excel")
+_tabs = st.tabs(_labels)
+tab1, tab2, tab3, tab4, tab5, tab6 = _tabs[:6]
+tab7 = _tabs[6] if want_excel else None
 # ════════════════════════════════════════════
 #  TAB 1 — OPTIMAL PORTFOLIO
 # ════════════════════════════════════════════
 with tab1:
     L, R = st.columns([1.1, 1], gap="large")
-
     with L:
         st.markdown("<p style='font-size:14px; font-weight:700; color:#0f172a;'>📦 Asset Allocation Weights</p>", unsafe_allow_html=True)
-
         wdf = pd.DataFrame({
             "Ticker": available,
             "Label":  [short(t) for t in available],
@@ -493,10 +785,8 @@ with tab1:
             "Return": [float(mean_ret[t]) for t in available],
             "Beta":   [betas[t] for t in available],
         }).sort_values("Weight", ascending=False).reset_index(drop=True)
-
         adf    = wdf[wdf["Weight"] > 0.001].copy()
         colors = PALETTE[:len(adf)]
-
         fig_bar = go.Figure(go.Bar(
             x=adf["Label"], y=adf["Weight"]*100,
             marker=dict(color=colors, line=dict(color="#fff", width=2)),
@@ -511,7 +801,6 @@ with tab1:
                    ykw=dict(title="Weight (%)", ticksuffix="%"))
         fig_bar.update_layout(showlegend=False)
         st.plotly_chart(fig_bar, use_container_width=True)
-
         tbl = pd.DataFrame({
             "Ticker":       [short(t) for t in wdf["Ticker"]],
             "Weight %":     [f"{w:.2%}" for w in wdf["Weight"]],
@@ -520,10 +809,8 @@ with tab1:
             "In Portfolio": ["✅ Yes" if w > 0.001 else "⭕ No" for w in wdf["Weight"]]
         })
         st.dataframe(tbl, use_container_width=True, hide_index=True, height=275)
-
     with R:
         st.markdown("<p style='font-size:14px; font-weight:700; color:#0f172a;'>🥧 Portfolio Composition</p>", unsafe_allow_html=True)
-
         fig_pie = go.Figure(go.Pie(
             labels=adf["Label"],
             values=(adf["Weight"]*100).round(2),
@@ -545,7 +832,6 @@ with tab1:
             )]
         )
         st.plotly_chart(fig_pie, use_container_width=True)
-
         st.markdown(f"""
         <div style='background:#ffffff; border:1px solid #e2e8f0; border-radius:14px;
                     padding:16px 18px; box-shadow:0 1px 4px rgba(0,0,0,.06);'>
@@ -567,15 +853,12 @@ with tab1:
             </div>
         </div>
         """, unsafe_allow_html=True)
-
-
 # ════════════════════════════════════════════
 #  TAB 2 — CAL & EFFICIENT FRONTIER
 # ════════════════════════════════════════════
 with tab2:
     st.markdown("<p style='font-size:14px; font-weight:700; color:#0f172a; margin-bottom:2px;'>📊 Capital Allocation Line & Efficient Frontier</p>", unsafe_allow_html=True)
     st.caption("5,000 random portfolios · Efficient frontier (upper portion from GMVP) · CAL from Rf through tangency point")
-
     with st.spinner("Generating efficient frontier..."):
         np.random.seed(42)
         n = len(available)
@@ -587,7 +870,6 @@ with tab2:
         sim_r = np.array(sim_r)
         sim_v = np.array(sim_v)
         sim_s = np.array(sim_s)
-
         ef_start = gmvp_ret if gmvp_ret is not None else float(mean_ret.min())
         ef_end   = float(mean_ret.max())
         ef_v, ef_r = [], []
@@ -595,13 +877,10 @@ with tab2:
             v = min_var_vol(mean_ret, cov_mat, tr)
             if v is not None:
                 ef_v.append(v); ef_r.append(tr)
-
     cal_max = opt_vol * 1.55
     cal_x   = np.linspace(0, cal_max, 100)
     cal_y   = rf_rate + opt_sh * cal_x
-
     fig_cal = go.Figure()
-
     fig_cal.add_trace(go.Scatter(
         x=sim_v*100, y=sim_r*100, mode="markers",
         marker=dict(
@@ -618,7 +897,6 @@ with tab2:
         name="Random Portfolios",
         hovertemplate="Vol: %{x:.2f}%<br>Return: %{y:.2f}%<extra>Random Portfolio</extra>"
     ))
-
     if len(ef_v) > 3:
         fig_cal.add_trace(go.Scatter(
             x=[v*100 for v in ef_v], y=[r*100 for r in ef_r],
@@ -626,7 +904,6 @@ with tab2:
             name="Efficient Frontier",
             hovertemplate="Vol: %{x:.2f}%<br>Return: %{y:.2f}%<extra>Efficient Frontier</extra>"
         ))
-
     if gmvp_ret and gmvp_vol:
         fig_cal.add_trace(go.Scatter(
             x=[gmvp_vol*100], y=[gmvp_ret*100], mode="markers+text",
@@ -638,14 +915,12 @@ with tab2:
             hovertemplate=(f"<b>GMVP</b><br>Return: {gmvp_ret:.2%}<br>"
                            f"Vol: {gmvp_vol:.2%}<extra></extra>")
         ))
-
     fig_cal.add_trace(go.Scatter(
         x=cal_x*100, y=cal_y*100, mode="lines",
         line=dict(color=C["blue"], width=2.5, dash="dash"),
         name=f"CAL (Sharpe={opt_sh:.2f})",
         hovertemplate="Vol: %{x:.2f}%<br>Return: %{y:.2f}%<extra>CAL</extra>"
     ))
-
     fig_cal.add_trace(go.Scatter(
         x=[0], y=[rf_rate*100], mode="markers+text",
         marker=dict(color=C["blue"], size=10, symbol="circle",
@@ -655,7 +930,6 @@ with tab2:
         name=f"Risk-Free ({rf_rate:.1%})",
         hovertemplate=f"Risk-Free: {rf_rate:.2%}<extra></extra>"
     ))
-
     fig_cal.add_trace(go.Scatter(
         x=[opt_vol*100], y=[opt_ret*100], mode="markers+text",
         marker=dict(color=C["red"], size=18, symbol="star",
@@ -667,18 +941,15 @@ with tab2:
                        f"Return: {opt_ret:.2%}<br>Vol: {opt_vol:.2%}<br>"
                        f"Sharpe: {opt_sh:.4f}<extra></extra>")
     ))
-
     x_max = max(float(np.percentile(sim_v,99)), opt_vol)*100*1.08
     y_min = rf_rate*100*0.7
     y_max = max(float(np.percentile(sim_r,99)), opt_ret)*100*1.08
-
     apply_white_theme(fig_cal, height=550, margin=dict(t=20,b=20,l=10,r=70))
     style_axes(fig_cal,
                xkw=dict(title="Annual Volatility (%)", ticksuffix="%", range=[0, x_max]),
                ykw=dict(title="Expected Annual Return (%)", ticksuffix="%", range=[y_min, y_max]))
     fig_cal.update_layout(hovermode="closest")
     st.plotly_chart(fig_cal, use_container_width=True)
-
     with st.expander("📖 How to read this chart"):
         a, b = st.columns(2)
         with a:
@@ -693,7 +964,7 @@ with tab2:
             - ⭐ **Red star** = Optimal (Tangency) Portfolio — maximum Sharpe.
             - 🔵 **Blue dot** = Risk-Free Rate at zero volatility.
             """)
-
+    # FIX 2: GMVP split into two separate metric cards
     s1, s2, s3, s4, s5 = st.columns(5)
     s1.metric("Optimal Return",    f"{opt_ret:.2%}")
     s2.metric("Optimal Volatility",f"{opt_vol:.2%}")
@@ -701,17 +972,13 @@ with tab2:
     if gmvp_ret and gmvp_vol:
         s4.metric("GMVP Return",     f"{gmvp_ret:.2%}")
         s5.metric("GMVP Volatility", f"{gmvp_vol:.2%}")
-
-
 # ════════════════════════════════════════════
 #  TAB 3 — SECURITY MARKET LINE
 # ════════════════════════════════════════════
 with tab3:
     st.markdown("<p style='font-size:14px; font-weight:700; color:#0f172a; margin-bottom:2px;'>🎯 Security Market Line — Individual Stock Positioning</p>", unsafe_allow_html=True)
-
     beta_range  = np.linspace(0, max(betas.values())*1.25, 120)
     sml_returns = rf_rate + beta_range*(mkt_annual - rf_rate)
-
     fig_sml = go.Figure()
     fig_sml.add_trace(go.Scatter(
         x=beta_range, y=sml_returns*100, mode="lines",
@@ -719,7 +986,6 @@ with tab3:
         name="Security Market Line",
         hovertemplate="Beta: %{x:.2f}<br>CAPM Return: %{y:.2f}%<extra>SML</extra>"
     ))
-
     for ticker in available:
         b      = betas[ticker]
         actual = float(mean_ret[ticker])
@@ -739,7 +1005,6 @@ with tab3:
                            f"Alpha: {actual-capm_r:+.2%}<br>"
                            f"{'✅ Undervalued' if under else '❌ Overvalued'}<extra></extra>")
         ))
-
     fig_sml.add_trace(go.Scatter(
         x=[port_beta], y=[capm_ret*100], mode="markers+text",
         marker=dict(color=C["red"], size=17, symbol="star",
@@ -767,14 +1032,12 @@ with tab3:
         name=f"Risk-Free ({rf_rate:.1%})",
         hovertemplate=f"Rf: {rf_rate:.2%}<extra></extra>"
     ))
-
     apply_white_theme(fig_sml, height=530)
     style_axes(fig_sml,
                xkw=dict(title="Beta (Systematic Risk)"),
                ykw=dict(title="Expected Return (%)", ticksuffix="%"))
     fig_sml.update_layout(hovermode="closest")
     st.plotly_chart(fig_sml, use_container_width=True)
-
     with st.expander("📖 How to read this chart"):
         a, b = st.columns(2)
         with a:
@@ -789,17 +1052,13 @@ with tab3:
             - ⭐ **Red star** = Optimal portfolio on SML
             - Hover over any dot for full alpha details
             """)
-
-
 # ════════════════════════════════════════════
 #  TAB 4 — CORRELATION MATRIX
 # ════════════════════════════════════════════
 with tab4:
     st.markdown("<p style='font-size:14px; font-weight:700; color:#0f172a; margin-bottom:2px;'>🔥 Correlation Matrix — Diversification Analysis</p>", unsafe_allow_html=True)
-
     slbls = [short(t) for t in available]
     cvals = corr_mat.values
-
     fig_heat = go.Figure(go.Heatmap(
         z=cvals, x=slbls, y=slbls,
         colorscale=[
@@ -830,28 +1089,23 @@ with tab4:
     fig_heat.update_yaxes(tickfont=dict(size=12,color=C["body"]),
                           autorange="reversed", showgrid=False, linecolor=C["border"])
     st.plotly_chart(fig_heat, use_container_width=True)
-
     flat = cvals[np.triu_indices_from(cvals, k=1)]
     s1,s2,s3,s4 = st.columns(4)
     s1.metric("Average Correlation", f"{flat.mean():.4f}", delta="Lower = more diversification")
     s2.metric("Max Correlation",     f"{flat.max():.4f}", delta="Most similar pair")
     s3.metric("Min Correlation",     f"{flat.min():.4f}", delta="Most different pair")
     s4.metric("Negative Pairs",      f"{(flat<0).sum()} / {len(flat)}", delta="Pairs with hedge benefit")
-
     with st.expander("📖 How to read this chart"):
         st.markdown("""
         - 🔴 **Red** = high positive correlation → stocks move together → less diversification
         - 🔵 **Blue** = low/negative correlation → stocks move independently → more diversification
         - **Diagonal** is always 1.0 (stock with itself)
         """)
-
-
 # ════════════════════════════════════════════
 #  TAB 5 — STOCK VALUATION
 # ════════════════════════════════════════════
 with tab5:
     st.markdown("<p style='font-size:14px; font-weight:700; color:#0f172a; margin-bottom:2px;'>📉 Individual Stock Valuation — CAPM vs Actual Return</p>", unsafe_allow_html=True)
-
     rows = []
     for t in available:
         b      = betas[t]
@@ -862,11 +1116,9 @@ with tab5:
                      "Actual":actual, "CAPM":capm_r, "Alpha":ai,
                      "Under": actual > capm_r,
                      "Weight": opt_w[available.index(t)]})
-
     vdf   = pd.DataFrame(rows).sort_values("Alpha", ascending=False)
     un_df = vdf[vdf["Under"]]
     ov_df = vdf[~vdf["Under"]]
-
     def val_card(row, is_under):
         color    = C["green"] if is_under else C["red"]
         brd      = "#bbf7d0" if is_under else "#fecaca"
@@ -894,9 +1146,7 @@ with tab5:
                      <div style='color:{C["blue"]};font-weight:700;font-size:13px;'>{row["Weight"]:.2%}</div></div>
             </div>
         </div>"""
-
     hc1, hc2 = st.columns(2, gap="large")
-
     with hc1:
         st.markdown(f"""
         <div style='background:#f0fdf4; border:1px solid #bbf7d0; border-radius:12px;
@@ -908,7 +1158,6 @@ with tab5:
         </div>""", unsafe_allow_html=True)
         for _, row in un_df.iterrows():
             st.markdown(val_card(row, True), unsafe_allow_html=True)
-
     with hc2:
         st.markdown(f"""
         <div style='background:#fef2f2; border:1px solid #fecaca; border-radius:12px;
@@ -920,7 +1169,6 @@ with tab5:
         </div>""", unsafe_allow_html=True)
         for _, row in ov_df.iterrows():
             st.markdown(val_card(row, False), unsafe_allow_html=True)
-
     st.markdown("<p style='font-size:14px; font-weight:700; color:#0f172a; margin:16px 0 6px;'>📊 Jensen's Alpha — All Stocks</p>", unsafe_allow_html=True)
     vs = vdf.sort_values("Alpha")
     fig_a = go.Figure(go.Bar(
@@ -938,19 +1186,15 @@ with tab5:
                ykw=dict(title="Jensen's Alpha (%)", ticksuffix="%"))
     fig_a.update_layout(showlegend=False, hovermode="closest")
     st.plotly_chart(fig_a, use_container_width=True)
-
-
 # ════════════════════════════════════════════
 #  TAB 6 — CAL SIMULATION
 # ════════════════════════════════════════════
 with tab6:
     st.markdown("<p style='font-size:14px; font-weight:700; color:#0f172a; margin-bottom:2px;'>📋 Capital Allocation Line — 101 Portfolio Combinations</p>", unsafe_allow_html=True)
     st.caption("Shifting 1% at a time: 100% Risk-Free → 100% Optimal Risky Portfolio")
-
     w_arr = np.linspace(0, 1, 101)
     r_arr = rf_rate + w_arr*(opt_ret - rf_rate)
     v_arr = w_arr * opt_vol
-
     fig_lines = make_subplots(
         rows=1, cols=2,
         subplot_titles=["Expected Return vs Risky Weight",
@@ -966,7 +1210,6 @@ with tab6:
         line=dict(color=C["amber"], width=2.5), name="Volatility",
         hovertemplate="Risky Wt: %{x:.0f}%<br>Vol: %{y:.2f}%<extra></extra>"
     ), 1, 2)
-
     fig_lines.update_layout(
         paper_bgcolor=C["bg"], plot_bgcolor=C["bg"],
         height=270, margin=dict(t=40,b=20,l=10,r=10),
@@ -980,9 +1223,7 @@ with tab6:
                            tickfont=dict(size=10, color=C["muted"]))
     for ann in fig_lines.layout.annotations:
         ann.font.color = C["head"]; ann.font.size = 12
-
     st.plotly_chart(fig_lines, use_container_width=True)
-
     cal_rows = []
     for i in range(101):
         wrf=i/100; wr=1-wrf
@@ -1002,8 +1243,34 @@ with tab6:
         })
     st.dataframe(pd.DataFrame(cal_rows),
                  use_container_width=True, hide_index=True, height=420)
-
-
+# ════════════════════════════════════════════
+#  TAB 7 — EXCEL EXPORT
+# ════════════════════════════════════════════
+if want_excel and tab7 is not None:
+    with tab7:
+        st.caption("Generates a formula-driven 3-sheet Excel workbook")
+        with st.spinner("Building Excel..."):
+            xl = build_excel(
+                stock_data=stock_data, market_data=market_data,
+                returns=returns, mkt_ret=mkt_ret,
+                mean_ret=mean_ret, cov_mat=cov_mat, corr_mat=corr_mat,
+                mkt_annual=mkt_annual, available=available,
+                market_choice=market_choice, rf_rate=rf_rate,
+                opt_w=opt_w, opt_ret=opt_ret, opt_vol=opt_vol, opt_sh=opt_sh,
+                port_beta=port_beta, capm_ret=capm_ret, alpha_val=alpha,
+                betas=betas, gmvp_ret=gmvp_ret, gmvp_vol=gmvp_vol,
+                start_date=start_date, end_date=end_date
+            )
+        if xl:
+            st.download_button(
+                label="📥  Download Excel Report",
+                data=xl,
+                file_name=f"Portfolio_Analysis_{start_date}_{end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        else:
+            st.error("Excel generation failed. Ensure `openpyxl` is installed.")
 # ─────────────────────────────────────────────
 #  FOOTER
 # ─────────────────────────────────────────────
