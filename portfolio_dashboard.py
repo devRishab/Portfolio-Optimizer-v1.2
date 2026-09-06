@@ -6,7 +6,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import scipy.optimize as sco
 from datetime import date
-import io
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -66,15 +65,38 @@ footer                                    { display: none !important; }
                                  font-weight: 800 !important; }
 [data-testid="stMetricDelta"] { font-size: 12px !important; }
 
-.stTabs [data-baseweb="tab-list"] { background: #ffffff; border-radius: 10px;
-                                     padding: 4px; gap: 3px;
-                                     border: 1px solid #e2e8f0;
-                                     box-shadow: 0 1px 3px rgba(0,0,0,.06); }
-.stTabs [data-baseweb="tab"]      { border-radius: 7px; color: #64748b !important;
-                                     font-weight: 600; font-size: 13px;
-                                     padding: 7px 14px; border: none !important; }
-.stTabs [aria-selected="true"]    { background: #2563eb !important;
-                                     color: #ffffff !important; }
+.stTabs [data-baseweb="tab-list"] {
+    background: #ffffff;
+    border-radius: 0;
+    padding: 0;
+    gap: 0;
+    border: none;
+    border-bottom: 2px solid #e2e8f0;
+    box-shadow: none;
+}
+.stTabs [data-baseweb="tab"] {
+    border-radius: 0;
+    color: #64748b !important;
+    font-weight: 600;
+    font-size: 13px;
+    padding: 10px 18px;
+    border: none !important;
+    background: transparent !important;
+    border-bottom: 2px solid transparent !important;
+    margin-bottom: -2px;
+    transition: color 0.2s ease;
+}
+.stTabs [data-baseweb="tab"]:hover {
+    color: #1e293b !important;
+    background: transparent !important;
+    border-bottom: 2px solid #cbd5e1 !important;
+}
+.stTabs [aria-selected="true"] {
+    color: #1e293b !important;
+    background: transparent !important;
+    border-bottom: 2px solid #1e293b !important;
+    font-weight: 700 !important;
+}
 h1,h2,h3,h4 { color: #0f172a !important; }
 p           { color: #334155; }
 [data-testid="stDataFrame"] { border-radius: 10px; border: 1px solid #e2e8f0;
@@ -260,441 +282,6 @@ def get_port_beta(port_daily, mkt_ret):
 
 
 # ─────────────────────────────────────────────
-#  EXCEL BUILDER  — matches AH1_FMT DATA format
-#  Formulas used: AVERAGE, STDEV, VAR (×252), IF, arithmetic
-#  Python values used: prices, weights, cov/corr matrices
-#  (avoids locale-specific COVARIANCE.S / CORREL issues)
-# ─────────────────────────────────────────────
-def build_excel(stock_data, market_data, returns, mkt_ret,
-                mean_ret, cov_mat, corr_mat, mkt_annual,
-                available, market_choice, rf_rate,
-                opt_w, opt_ret, opt_vol, opt_sh,
-                port_beta, capm_ret, alpha_val, betas,
-                gmvp_ret, gmvp_vol, start_date, end_date):
-    try:
-        import openpyxl
-        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-        from openpyxl.utils import get_column_letter
-    except ImportError:
-        return None
-
-    wb  = openpyxl.Workbook()
-    lbl = [short(t) for t in available]
-    n   = len(available)
-
-    # ── style helpers ─────────────────────────────────────────────────────
-    def _fill(h): return PatternFill("solid", fgColor=h)
-    def _font(h, bold=False, sz=10): return Font(bold=bold, color=h, size=sz)
-    thin = Side(style="thin", color="CBD5E0")
-    BRD  = Border(left=thin, right=thin, top=thin, bottom=thin)
-    CTR  = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    LFT  = Alignment(horizontal="left",   vertical="center")
-    RGT  = Alignment(horizontal="right",  vertical="center")
-
-    F_HDR  = _fill("1E3A5F"); FN_HDR  = _font("FFFFFF", True)
-    F_SUB  = _fill("2D4A7A"); FN_SUB  = _font("FFFFFF", True)
-    F_STAT = _fill("EFF6FF"); FN_STAT = _font("1E3A5F", True)
-    F_TTL  = _fill("0F172A"); FN_TTL  = _font("FFFFFF", True, 12)
-    FN_NRM = _font("1E293B")
-    FN_GRN = _font("16A34A", True)
-    FN_RED = _font("DC2626", True)
-
-    def hdr(ws, r, c, v, fill=F_HDR, fn=FN_HDR, aln=CTR):
-        cl = ws.cell(row=r, column=c, value=v)
-        cl.fill=fill; cl.font=fn; cl.alignment=aln; cl.border=BRD
-        return cl
-
-    def put(ws, r, c, v, fmt=None, fn=FN_NRM, fill=None, aln=RGT):
-        cl = ws.cell(row=r, column=c, value=v)
-        cl.font=fn; cl.alignment=aln; cl.border=BRD
-        if fmt:  cl.number_format=fmt
-        if fill: cl.fill=fill
-        return cl
-
-    def cw(ws, col, w):
-        ws.column_dimensions[get_column_letter(col)].width = w
-
-    # column layout (matches AH1_FMT DATA format)
-    # A: Date  |  B..B+n-1: stock prices  |  B+n: market price
-    # B+n+1: stock returns ... | B+n+1+n: market return | gap | stats
-    PC     = 2            # first price col  (B)
-    MKT_PC = PC + n       # market price col (D for n=2)
-    RC     = MKT_PC + 1   # first return col (E for n=2) — no gap
-    MKT_RC = RC + n       # market return col (G for n=2)
-    SC     = MKT_RC + 2   # stats label col
-
-    # ═══════════════════════════════════════════════════════════════════
-    #  SHEET 1 — Data, Covariance & Correlation
-    # ═══════════════════════════════════════════════════════════════════
-    ws1 = wb.active
-    ws1.title = "Data, Covariance & Correlation"
-    ws1.freeze_panes = "B3"
-
-    # title row 1
-    last_col = SC + n + 2
-    ws1.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
-    c_ = ws1.cell(row=1, column=1,
-        value=f"Data, Covariance & Correlation  |  {start_date} to {end_date}  |  Market: {market_choice}")
-    c_.font=FN_TTL; c_.fill=F_TTL; c_.alignment=CTR
-
-    # row 2: column headers
-    hdr(ws1, 2, 1, "Date")
-    for i, lb in enumerate(lbl):
-        hdr(ws1, 2, PC+i, f"{lb}\nPrice")
-    hdr(ws1, 2, MKT_PC, f"{market_choice}\nPrice")
-    # "Daily Returns →" label merged over return columns
-    ws1.merge_cells(start_row=2, start_column=RC, end_row=2, end_column=MKT_RC)
-    rh = ws1.cell(row=2, column=RC, value="Daily Returns →")
-    rh.fill=F_SUB; rh.font=FN_SUB; rh.alignment=CTR; rh.border=BRD
-
-    # stats headers
-    hdr(ws1, 2, SC,   "Metric",        fill=F_STAT, fn=FN_STAT)
-    for i, lb in enumerate(lbl):
-        hdr(ws1, 2, SC+1+i, lb,        fill=F_STAT, fn=FN_STAT)
-    hdr(ws1, 2, SC+1+n, market_choice, fill=F_STAT, fn=FN_STAT)
-
-    # sub-header row 3: ticker symbols for return columns
-    hdr(ws1, 3, 1, "Date",            fill=F_SUB, fn=FN_SUB)
-    for i, t in enumerate(available):
-        hdr(ws1, 3, PC+i, t,           fill=F_SUB, fn=FN_SUB)
-    hdr(ws1, 3, MKT_PC, market_choice,fill=F_SUB, fn=FN_SUB)
-    for i, lb in enumerate(lbl):
-        hdr(ws1, 3, RC+i, f"{lb}\nReturn", fill=F_SUB, fn=FN_SUB)
-    hdr(ws1, 3, MKT_RC, f"{market_choice}\nReturn", fill=F_SUB, fn=FN_SUB)
-
-    # column widths
-    cw(ws1, 1, 13)
-    for c__ in range(2, MKT_RC+2):
-        cw(ws1, c__, 14)
-    cw(ws1, SC, 26)
-    for c__ in range(SC+1, SC+n+3):
-        cw(ws1, c__, 16)
-
-    # ── daily data rows ────────────────────────────────────────────────
-    aligned_idx = returns.index
-    price_df    = stock_data.reindex(aligned_idx)    # prices on return dates
-    mkt_prc     = market_data.reindex(aligned_idx)
-    DATA_ROW    = 4   # first data row
-
-    # We also need the prior price row so return formula (Bn/Bn-1)-1 works
-    # Write an extra "base" price row at DATA_ROW with no returns shown
-    all_price_dates = stock_data.index
-    first_return_date = aligned_idx[0]
-    base_date_pos = list(all_price_dates).index(first_return_date)
-
-    if base_date_pos > 0:
-        base_date = all_price_dates[base_date_pos - 1]
-        base_row  = DATA_ROW  # the hidden base-price row
-        DATA_ROW  = DATA_ROW + 1  # actual first visible data row shifts down
-
-        # Write base price row (date + prices, no returns, light fill)
-        bc = ws1.cell(row=base_row, column=1, value=base_date.date())
-        bc.number_format = "DD-MMM-YYYY"; bc.alignment=CTR; bc.border=BRD
-        bc.font = _font("94A3B8")
-        for i, t in enumerate(available):
-            if t in stock_data.columns:
-                v = float(stock_data.loc[base_date, t]) if base_date in stock_data.index else None
-                put(ws1, base_row, PC+i, v, fmt="0.00")
-        v_mkt = float(market_data.loc[base_date]) if base_date in market_data.index else None
-        put(ws1, base_row, MKT_PC, v_mkt, fmt="0.00")
-
-    for ri, dt in enumerate(aligned_idx):
-        row = DATA_ROW + ri
-        dc = ws1.cell(row=row, column=1, value=dt.date())
-        dc.number_format="DD-MMM-YYYY"; dc.alignment=CTR; dc.border=BRD; dc.font=FN_NRM
-        # stock prices (hardcoded — raw market data)
-        for i, t in enumerate(available):
-            v = float(price_df.loc[dt, t]) if (t in price_df.columns and dt in price_df.index) else None
-            put(ws1, row, PC+i, v, fmt="0.00")
-        # market price
-        v = float(mkt_prc.loc[dt]) if dt in mkt_prc.index else None
-        put(ws1, row, MKT_PC, v, fmt="0.00")
-        # stock returns — FORMULA: (price / prev_price) - 1
-        for i in range(n):
-            pcol = get_column_letter(PC+i)
-            formula = f"=({pcol}{row}/{pcol}{row-1})-1"
-            put(ws1, row, RC+i, formula, fmt="0.00000000")
-        # market return — FORMULA
-        mcol = get_column_letter(MKT_PC)
-        put(ws1, row, MKT_RC, f"=({mcol}{row}/{mcol}{row-1})-1", fmt="0.00000000")
-
-    D_END = DATA_ROW + len(aligned_idx) - 1  # last data row
-
-    # ── statistics block — AVERAGE/STDEV/VAR formulas ─────────────────
-    stat_defs = [
-        ("Average Daily Return",   "AVERAGE", "0.00000000"),
-        ("Annualised Daily Return", "ANNRET",  "0.00%"),
-        ("Daily STD",              "STDEV",   "0.00000000"),
-        ("Annualised STD",         "ANNSTD",  "0.00%"),
-        ("Daily Variance",         "VAR",     "0.00000000"),
-        ("Annualised Variance",    "ANNVAR",  "0.00000000"),
-    ]
-    sr = DATA_ROW
-    VAR_MKT_ROW = None
-
-    for si, (s_lbl, stype, fmt) in enumerate(stat_defs):
-        if stype == "VAR":
-            VAR_MKT_ROW = sr  # remember row for daily variance (used for beta formula)
-        hdr(ws1, sr, SC, s_lbl, fill=F_STAT, fn=FN_STAT, aln=LFT)
-        for i in range(n):
-            rc_ = get_column_letter(RC+i)
-            rng = f"{rc_}{DATA_ROW}:{rc_}{D_END}"
-            if   stype == "AVERAGE": f_ = f"=AVERAGE({rng})"
-            elif stype == "ANNRET":  f_ = f"=AVERAGE({rng})*252"
-            elif stype == "STDEV":   f_ = f"=STDEV({rng})"
-            elif stype == "ANNSTD":  f_ = f"=STDEV({rng})*SQRT(252)"
-            elif stype == "VAR":     f_ = f"=VAR({rng})"
-            elif stype == "ANNVAR":  f_ = f"=VAR({rng})*252"
-            put(ws1, sr, SC+1+i, f_, fmt=fmt)
-        mrc_ = get_column_letter(MKT_RC)
-        mrng = f"{mrc_}{DATA_ROW}:{mrc_}{D_END}"
-        if   stype == "AVERAGE": mf = f"=AVERAGE({mrng})"
-        elif stype == "ANNRET":  mf = f"=AVERAGE({mrng})*252"
-        elif stype == "STDEV":   mf = f"=STDEV({mrng})"
-        elif stype == "ANNSTD":  mf = f"=STDEV({mrng})*SQRT(252)"
-        elif stype == "VAR":     mf = f"=VAR({mrng})"
-        elif stype == "ANNVAR":  mf = f"=VAR({mrng})*252"
-        put(ws1, sr, SC+1+n, mf, fmt=fmt)
-        sr += 1
-
-    sr += 1  # blank row
-
-    # row refs for formulas
-    ANN_RET_MKT = f"{get_column_letter(SC+1+n)}{DATA_ROW+1}"  # annualised return of market
-    if VAR_MKT_ROW:
-        VAR_MKT_REF = f"{get_column_letter(SC+1+n)}{VAR_MKT_ROW}"  # daily var of market
-
-    # ── Covariance with Market ─────────────────────────────────────────
-    # (Python values — avoids locale-specific COVARIANCE.S function)
-    hdr(ws1, sr, SC, "Covariance with Market (Daily)", fill=F_HDR)
-    sr += 1
-    hdr(ws1, sr, SC,   "Stock",                  fill=F_STAT, fn=FN_STAT, aln=LFT)
-    hdr(ws1, sr, SC+1, "Cov with Market (Daily)", fill=F_STAT, fn=FN_STAT)
-    hdr(ws1, sr, SC+2, "Beta",                   fill=F_STAT, fn=FN_STAT)
-    sr += 1
-    mkt_var_daily = float(np.var(mkt_ret, ddof=1))
-    COV_CELLS = {}   # store cov cell reference per stock for beta formula
-    for i, t in enumerate(available):
-        cov_val = float(np.cov(returns[t], mkt_ret)[0,1])
-        cov_cell = f"{get_column_letter(SC+1)}{sr+i}"
-        COV_CELLS[t] = cov_cell
-        put(ws1, sr+i, SC,   lbl[i], aln=LFT)
-        # Cov: Python value
-        put(ws1, sr+i, SC+1, cov_val, fmt="0.00000000")
-        # Beta: formula = Cov / Var(market)
-        if VAR_MKT_ROW:
-            put(ws1, sr+i, SC+2,
-                f"={cov_cell}/{VAR_MKT_REF}",
-                fmt="0.000000")
-        else:
-            put(ws1, sr+i, SC+2, betas[t], fmt="0.000000")
-    BETA_ROWS = {t: sr+i for i, t in enumerate(available)}
-    sr += n + 1
-
-    # ── Covariance Matrix Annualised (Python values) ───────────────────
-    hdr(ws1, sr, SC, "Covariance Matrix (Annualised)", fill=F_HDR)
-    sr += 1
-    hdr(ws1, sr, SC, "", fill=F_STAT, fn=FN_STAT)
-    for i, lb in enumerate(lbl):
-        hdr(ws1, sr, SC+1+i, lb, fill=F_STAT, fn=FN_STAT)
-    sr += 1
-    for i, t in enumerate(available):
-        hdr(ws1, sr, SC, lbl[i], fill=F_STAT, fn=FN_STAT, aln=LFT)
-        for j, t2 in enumerate(available):
-            put(ws1, sr, SC+1+j, float(cov_mat.loc[t, t2]), fmt="0.00000000")
-        sr += 1
-    sr += 1
-
-    # ── Correlation Matrix (Python values) ────────────────────────────
-    hdr(ws1, sr, SC, "Correlation Matrix", fill=F_HDR)
-    sr += 1
-    hdr(ws1, sr, SC, "", fill=F_STAT, fn=FN_STAT)
-    for i, lb in enumerate(lbl):
-        hdr(ws1, sr, SC+1+i, lb, fill=F_STAT, fn=FN_STAT)
-    sr += 1
-    for i, t in enumerate(available):
-        hdr(ws1, sr, SC, lbl[i], fill=F_STAT, fn=FN_STAT, aln=LFT)
-        for j, t2 in enumerate(available):
-            put(ws1, sr, SC+1+j, float(corr_mat.loc[t, t2]), fmt="0.000000")
-        sr += 1
-
-    # ═══════════════════════════════════════════════════════════════════
-    #  SHEET 2 — SML Analysis
-    # ═══════════════════════════════════════════════════════════════════
-    ws2 = wb.create_sheet("SML")
-    for c__, w__ in zip(range(1,6), [28,14,20,20,18]):
-        cw(ws2, c__, w__)
-
-    ws2.merge_cells("A1:E1")
-    c_ = ws2.cell(row=1, column=1, value="Security Market Line — CAPM Analysis")
-    c_.font=FN_TTL; c_.fill=F_TTL; c_.alignment=CTR
-
-    # anchor cells (H2=Rf, H3=Rm) — referenced by CAPM formulas
-    ws2.cell(row=2, column=7, value="Risk-Free Rate").font = FN_STAT
-    ws2.cell(row=2, column=8, value=rf_rate).number_format = "0.00%"
-    ws2.cell(row=3, column=7, value="Market Annual Return").font = FN_STAT
-    ws2.cell(row=3, column=8, value=mkt_annual).number_format = "0.00%"
-    ws2.cell(row=4, column=7, value="Market Risk Premium").font = FN_STAT
-    ws2.cell(row=4, column=8, value=f"=H3-H2").number_format = "0.00%"
-    ws2.cell(row=5, column=7, value="Period").font = FN_STAT
-    ws2.cell(row=5, column=8, value=f"{start_date} → {end_date}")
-    ws2.cell(row=6, column=7, value="Market Index").font = FN_STAT
-    ws2.cell(row=6, column=8, value=market_choice)
-
-    RF2 = "$H$2"; RM2 = "$H$3"
-
-    for c__, h in enumerate(
-            ["Stock / Asset","Beta (β)","CAPM Required Return",
-             "Actual Annualised Return","Verdict"], start=1):
-        hdr(ws2, 8, c__, h)
-
-    # risk-free row
-    put(ws2, 9, 1, "Risk-Free Asset", aln=LFT)
-    put(ws2, 9, 2, 0,               fmt="0.0000")
-    put(ws2, 9, 3, f"={RF2}",        fmt="0.00%")
-    put(ws2, 9, 4, f"={RF2}",        fmt="0.00%")
-    put(ws2, 9, 5, "—",              aln=CTR)
-
-    # market row
-    put(ws2, 10, 1, market_choice,   aln=LFT)
-    put(ws2, 10, 2, 1.0,             fmt="0.0000")
-    put(ws2, 10, 3, f"={RM2}",       fmt="0.00%")
-    put(ws2, 10, 4, f"={RM2}",       fmt="0.00%")
-    put(ws2, 10, 5, "Market Portfolio", aln=CTR)
-
-    for idx, t in enumerate(available):
-        row = 11 + idx
-        b_   = betas[t]
-        act  = float(mean_ret[t])
-        capm_= rf_rate + b_*(mkt_annual - rf_rate)
-        under = act > capm_
-        put(ws2, row, 1, lbl[idx],          aln=LFT)
-        put(ws2, row, 2, b_,                fmt="0.000000")
-        # CAPM = Rf + Beta*(Rm-Rf)  — formula referencing anchor cells
-        put(ws2, row, 3, f"={RF2}+B{row}*({RM2}-{RF2})", fmt="0.00%")
-        put(ws2, row, 4, act,               fmt="0.00%")
-        # Verdict — IF formula
-        vc = ws2.cell(row=row, column=5,
-                      value=f'=IF(D{row}>C{row},"✅ Undervalued","❌ Overvalued")')
-        vc.alignment=CTR; vc.border=BRD
-        vc.font = FN_GRN if under else FN_RED
-
-    # ═══════════════════════════════════════════════════════════════════
-    #  SHEET 3 — Optimal Portfolio + CAL
-    # ═══════════════════════════════════════════════════════════════════
-    ws3 = wb.create_sheet("Optimal Portfolio")
-    for c__, w__ in zip(range(1,10), [28,13,13,13,13,13,13,13,14]):
-        cw(ws3, c__, w__)
-    for c__ in range(10,14):
-        cw(ws3, c__, 18)
-
-    ws3.merge_cells("A1:H1")
-    c_ = ws3.cell(row=1, column=1,
-                  value="Optimal Risky Portfolio — SLSQP (Max Sharpe)")
-    c_.font=FN_TTL; c_.fill=F_TTL; c_.alignment=CTR
-
-    # anchor params in col K/L (simple values, no locale issues)
-    def anc(ws, r, lbl_, val, fmt_):
-        ws.cell(row=r, column=11, value=lbl_).font = FN_STAT
-        cl = ws.cell(row=r, column=12, value=val)
-        cl.number_format = fmt_
-    anc(ws3, 2,  "Risk-Free Rate",   rf_rate,    "0.00%")
-    anc(ws3, 3,  "Market Return",    mkt_annual, "0.00%")
-    anc(ws3, 4,  "Opt. Return",      opt_ret,    "0.00%")
-    anc(ws3, 5,  "Opt. Volatility",  opt_vol,    "0.00%")
-    anc(ws3, 6,  "Opt. Beta",        port_beta,  "0.0000")
-    ws3.cell(row=7, column=11, value="Sharpe Ratio").font = FN_STAT
-    ws3.cell(row=7, column=12, value=f"=(L4-L2)/L5").number_format = "0.0000"
-    RF3="$L$2"; RM3="$L$3"; OR3="$L$4"; OV3="$L$5"; OB3="$L$6"; OS3="$L$7"
-
-    # weights table headers
-    for c__, h in enumerate(
-            ["Stock","Optimal Weight","Annual Return","Annual Std Dev",
-             "Beta","CAPM Return","Jensen's Alpha","In Portfolio?"], start=1):
-        hdr(ws3, 2, c__, h)
-
-    for idx, t in enumerate(available):
-        row = 3 + idx
-        w_  = float(opt_w[available.index(t)])
-        ret_= float(mean_ret[t])
-        std_= float(np.sqrt(np.var(returns[t], ddof=1)*252))
-        b_  = betas[t]
-        put(ws3, row, 1, lbl[idx], aln=LFT)
-        put(ws3, row, 2, w_,       fmt="0.00%")
-        put(ws3, row, 3, ret_,     fmt="0.00%")
-        put(ws3, row, 4, std_,     fmt="0.00%")
-        put(ws3, row, 5, b_,       fmt="0.0000")
-        # CAPM formula — arithmetic referencing anchor cells
-        put(ws3, row, 6, f"={RF3}+E{row}*({RM3}-{RF3})", fmt="0.00%")
-        # Alpha = Actual - CAPM
-        put(ws3, row, 7, f"=C{row}-F{row}", fmt="+0.00%;-0.00%")
-        ac = ws3.cell(row=row, column=8,
-                      value=f'=IF(B{row}>0.1%,"✅ Yes","⭕ No")')
-        ac.alignment=CTR; ac.border=BRD
-        ac.font = FN_GRN if w_ > 0.001 else FN_NRM
-
-    sr3 = 4 + n
-
-    # portfolio summary — all linked to anchor cells
-    hdr(ws3, sr3, 1, "Portfolio Summary", fill=F_HDR)
-    sr3 += 1
-    summ = [
-        ("Expected Annual Return", f"={OR3}",                          "0.00%"),
-        ("Annual Volatility",      f"={OV3}",                          "0.00%"),
-        ("Sharpe Ratio",           f"={OS3}",                          "0.0000"),
-        ("Portfolio Beta",         f"={OB3}",                          "0.0000"),
-        ("CAPM Expected Return",   f"={RF3}+{OB3}*({RM3}-{RF3})",      "0.00%"),
-        ("Jensen Alpha",           f"={OR3}-({RF3}+{OB3}*({RM3}-{RF3}))", "+0.00%;-0.00%"),
-        ("GMVP Return",            gmvp_ret if isinstance(gmvp_ret, float) else "N/A", "0.00%"),
-        ("GMVP Volatility",        gmvp_vol if isinstance(gmvp_vol, float) else "N/A", "0.00%"),
-        ("Risk-Free Rate",         f"={RF3}",                          "0.00%"),
-        ("Market Annual Return",   f"={RM3}",                          "0.00%"),
-        ("Market Risk Premium",    f"={RM3}-{RF3}",                    "0.00%"),
-    ]
-    for s_l, s_v, s_f in summ:
-        hdr(ws3, sr3, 1, s_l, fill=F_STAT, fn=FN_STAT, aln=LFT)
-        if isinstance(s_v, str) and s_v.startswith("="):
-            put(ws3, sr3, 2, s_v, fmt=s_f)
-        elif isinstance(s_v, float):
-            put(ws3, sr3, 2, s_v, fmt=s_f)
-        else:
-            put(ws3, sr3, 2, str(s_v), aln=LFT)
-        sr3 += 1
-
-    sr3 += 1
-
-    # CAL Simulation Table — all Excel formulas ────────────────────────
-    ws3.merge_cells(start_row=sr3, start_column=1, end_row=sr3, end_column=7)
-    c_ = ws3.cell(row=sr3, column=1,
-                  value="Capital Allocation Line — 101 Portfolio Combinations")
-    c_.font=FN_TTL; c_.fill=F_HDR; c_.alignment=CTR
-    sr3 += 1
-
-    for c__, h in enumerate(
-            ["Risk-Free Wt","Risky Wt","Expected Return",
-             "Volatility (Risk)","Portfolio Beta","CAPM Req. Return","Sharpe Ratio"],
-            start=1):
-        hdr(ws3, sr3, c__, h)
-    sr3 += 1
-
-    for i in range(101):
-        row = sr3 + i
-        put(ws3, row, 1, i/100.0,                            fmt="0%")
-        put(ws3, row, 2, f"=1-A{row}",                       fmt="0%")
-        put(ws3, row, 3, f"=A{row}*{RF3}+B{row}*{OR3}",     fmt="0.00%")
-        put(ws3, row, 4, f"=B{row}*{OV3}",                   fmt="0.00%")
-        put(ws3, row, 5, f"=B{row}*{OB3}",                   fmt="0.0000")
-        put(ws3, row, 6, f"={RF3}+E{row}*({RM3}-{RF3})",     fmt="0.00%")
-        put(ws3, row, 7,
-            f"=IF(D{row}>0,(C{row}-{RF3})/D{row},0)",        fmt="0.0000")
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf.getvalue()
-
-
-# ─────────────────────────────────────────────
 #  SIDEBAR
 # ─────────────────────────────────────────────
 with st.sidebar:
@@ -754,10 +341,6 @@ with st.sidebar:
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     run_btn = st.button("🚀  Run Optimization", use_container_width=True, type="primary")
-
-    st.markdown("<hr style='border-color:#334155; margin:10px 0;'>", unsafe_allow_html=True)
-    st.markdown("<p style='color:#93c5fd; font-size:10px; font-weight:800; letter-spacing:1.5px; text-transform:uppercase; margin-bottom:4px;'>📥 EXCEL EXPORT</p>", unsafe_allow_html=True)
-    want_excel = st.checkbox("Generate Excel report", value=False)
 
     st.markdown("""
     <div style='margin-top:12px; background:#0f172a; border:1px solid #334155;
@@ -907,20 +490,14 @@ st.markdown("---")
 # ─────────────────────────────────────────────
 #  TABS
 # ─────────────────────────────────────────────
-_labels = [
+tab1,tab2,tab3,tab4,tab5,tab6 = st.tabs([
     "🏆  Optimal Portfolio",
     "📊  CAL & Efficient Frontier",
     "🎯  Security Market Line",
     "🔥  Correlation Matrix",
     "📉  Stock Valuation",
-    "📋  CAL Simulation",
-]
-if want_excel:
-    _labels.append("📥  Export to Excel")
-
-_tabs = st.tabs(_labels)
-tab1, tab2, tab3, tab4, tab5, tab6 = _tabs[:6]
-tab7 = _tabs[6] if want_excel else None
+    "📋  CAL Simulation"
+])
 
 
 # ════════════════════════════════════════════
@@ -1447,36 +1024,6 @@ with tab6:
         })
     st.dataframe(pd.DataFrame(cal_rows),
                  use_container_width=True, hide_index=True, height=420)
-
-
-# ════════════════════════════════════════════
-#  TAB 7 — EXCEL EXPORT
-# ════════════════════════════════════════════
-if want_excel and tab7 is not None:
-    with tab7:
-        st.caption("Generates a formula-driven 3-sheet Excel workbook")
-        with st.spinner("Building Excel..."):
-            xl = build_excel(
-                stock_data=stock_data, market_data=market_data,
-                returns=returns, mkt_ret=mkt_ret,
-                mean_ret=mean_ret, cov_mat=cov_mat, corr_mat=corr_mat,
-                mkt_annual=mkt_annual, available=available,
-                market_choice=market_choice, rf_rate=rf_rate,
-                opt_w=opt_w, opt_ret=opt_ret, opt_vol=opt_vol, opt_sh=opt_sh,
-                port_beta=port_beta, capm_ret=capm_ret, alpha_val=alpha,
-                betas=betas, gmvp_ret=gmvp_ret, gmvp_vol=gmvp_vol,
-                start_date=start_date, end_date=end_date
-            )
-        if xl:
-            st.download_button(
-                label="📥  Download Excel Report",
-                data=xl,
-                file_name=f"Portfolio_Analysis_{start_date}_{end_date}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-        else:
-            st.error("Excel generation failed. Ensure `openpyxl` is installed.")
 
 
 # ─────────────────────────────────────────────
