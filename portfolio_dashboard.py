@@ -65,38 +65,15 @@ footer                                    { display: none !important; }
                                  font-weight: 800 !important; }
 [data-testid="stMetricDelta"] { font-size: 12px !important; }
 
-.stTabs [data-baseweb="tab-list"] {
-    background: #ffffff;
-    border-radius: 0;
-    padding: 0;
-    gap: 0;
-    border: none;
-    border-bottom: 2px solid #e2e8f0;
-    box-shadow: none;
-}
-.stTabs [data-baseweb="tab"] {
-    border-radius: 0;
-    color: #64748b !important;
-    font-weight: 600;
-    font-size: 13px;
-    padding: 10px 18px;
-    border: none !important;
-    background: transparent !important;
-    border-bottom: 2px solid transparent !important;
-    margin-bottom: -2px;
-    transition: color 0.2s ease;
-}
-.stTabs [data-baseweb="tab"]:hover {
-    color: #1e293b !important;
-    background: transparent !important;
-    border-bottom: 2px solid #cbd5e1 !important;
-}
-.stTabs [aria-selected="true"] {
-    color: #1e293b !important;
-    background: transparent !important;
-    border-bottom: 2px solid #1e293b !important;
-    font-weight: 700 !important;
-}
+.stTabs [data-baseweb="tab-list"] { background: #ffffff; border-radius: 10px;
+                                     padding: 4px; gap: 3px;
+                                     border: 1px solid #e2e8f0;
+                                     box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.stTabs [data-baseweb="tab"]      { border-radius: 7px; color: #64748b !important;
+                                     font-weight: 600; font-size: 13px;
+                                     padding: 7px 14px; border: none !important; }
+.stTabs [aria-selected="true"]    { background: #2563eb !important;
+                                     color: #ffffff !important; }
 h1,h2,h3,h4 { color: #0f172a !important; }
 p           { color: #334155; }
 [data-testid="stDataFrame"] { border-radius: 10px; border: 1px solid #e2e8f0;
@@ -717,12 +694,13 @@ with tab2:
             - 🔵 **Blue dot** = Risk-Free Rate at zero volatility.
             """)
 
-    s1,s2,s3,s4 = st.columns(4)
-    s1.metric("Optimal Return",     f"{opt_ret:.2%}")
-    s2.metric("Optimal Volatility", f"{opt_vol:.2%}")
-    s3.metric("Max Sharpe Ratio",   f"{opt_sh:.4f}")
+    s1, s2, s3, s4, s5 = st.columns(5)
+    s1.metric("Optimal Return",    f"{opt_ret:.2%}")
+    s2.metric("Optimal Volatility",f"{opt_vol:.2%}")
+    s3.metric("Max Sharpe Ratio",  f"{opt_sh:.4f}")
     if gmvp_ret and gmvp_vol:
-        s4.metric("GMVP", f"{gmvp_ret:.2%} ret | {gmvp_vol:.2%} vol")
+        s4.metric("GMVP Return",     f"{gmvp_ret:.2%}")
+        s5.metric("GMVP Volatility", f"{gmvp_vol:.2%}")
 
 
 # ════════════════════════════════════════════
